@@ -61,11 +61,11 @@ def create_invoice(user_id, price=100):
         "productPrice": [price],
         "productCount": [1],
         "language": "UA",
-        "serviceUrl": "https://google.com",  # тут Railway callback
-        "transactionType": "AUTO",  # recurrent
+        "serviceUrl": f"{config.CALLBACK_URL}/wfp_callback",  # URL Railway
     }
     data["merchantSignature"] = generate_signature(data)
-    r = requests.post("https://secure.wayforpay.com/pay", json=data)
+
+    r = requests.post("https://api.wayforpay.com/api/invoice", json=data)
     return r.json()
 
 # ---------- Telegram ----------
