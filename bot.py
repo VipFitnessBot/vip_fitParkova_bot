@@ -1,158 +1,148 @@
-import json
-import time
-import hmac
-import hashlib
-import base64
-import requests
-import schedule
-import threading
-from datetime import datetime, timedelta
+# bot.py - Telegram bot for VIP subscriptions with WayForPay integration
+import os, time, json, threading, logging, requests
+from datetime import datetime
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
-import config
+import config, db_utils
 
-USERS_FILE = "users.json"
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# ---------- Робота з юзерами ----------
-def load_users():
-    try:
-        with open(USERS_FILE, "r") as f:
-            return json.load(f)
-    except:
-        return {}
-
-def save_users(users):
-    with open(USERS_FILE, "w") as f:
-        json.dump(users, f, indent=4)
-
-def get_discount(level):
-    return {0:0,1:20,2:20,3:25,4:25,5:30,6:30,7:35,8:35,9:40,10:40}.get(level,45)
-
-def get_bonus(level):
-    bonuses = {
-        1: "❌ бонусів",
-        2: "☕ кава",
-        3: "☕☕ дві кави",
-        4: "🥤 протеїновий коктейль",
-        5: "☕ + 🥤",
-        6: "☕☕ + 🥤"
-    }
-    return bonuses.get(level, "☕☕ + 🥤")
-
-# ---------- WFP ----------
-def generate_signature(data):
-    keys = [
-        "merchantAccount","merchantDomainName","orderReference","orderDate",
-        "amount","currency"
+def main_menu():
+    kb = [
+        [InlineKeyboardButton("📊 Мій рівень", callback_data="my_level")],
+        [InlineKeyboardButton("ℹ️ Рівні та бонуси", callback_data="info")],
+        [InlineKeyboardButton("💳 Сплатити підписку", callback_data="pay")]
     ]
-    s = ";".join([str(data[k]) for k in keys])
-    return base64.b64encode(hmac.new(config.MERCHANT_SECRET_KEY.encode(), s.encode(), hashlib.md5).digest()).decode()
+    return InlineKeyboardMarkup(kb)
 
-def create_invoice(user_id, price=100):
+def generate_signature(payload: dict):
+    import hashlib, base64
+    concat = ";".join([str(payload.get(k,'')) for k in ("merchantAccount","merchantDomainName","orderReference","orderDate","amount","currency")])
+    s = concat + config.MERCHANT_SECRET_KEY
+    sha = hashlib.sha1(s.encode('utf-8')).digest()
+    return base64.b64encode(sha).decode()
+
+def create_invoice(user_id, price=None):
+    price = price or int(config.SUBSCRIPTION_PRICE)
     order_ref = f"sub_{user_id}_{int(time.time())}"
     data = {
+        "apiVersion": 1,
+        "requestType": "CREATE_INVOICE",
         "merchantAccount": config.MERCHANT_ACCOUNT,
         "merchantDomainName": config.MERCHANT_DOMAIN_NAME,
         "orderReference": order_ref,
         "orderDate": int(time.time()),
-        "amount": price,
+        "amount": str(price),
         "currency": "UAH",
-        "productName": ["Підписка"],
+        "productName": ["VIP subscription"],
         "productPrice": [price],
         "productCount": [1],
         "language": "UA",
-        "serviceUrl": config.CALLBACK_URL,
-        "transactionType": "PURCHASE",   # ← перша оплата вручну
-        "apiVersion": 1
+        "serviceUrl": config.CALLBACK_URL
     }
     data["merchantSignature"] = generate_signature(data)
+    try:
+        r = requests.post("https://api.wayforpay.com/api", json=data, timeout=30)
+        logger.info("WFP create invoice response: %s", r.text)
+        return r.json()
+    except Exception as e:
+        logger.exception("WFP create_invoice error")
+        return {"error": str(e)}
 
-    r = requests.post(
-        "https://api.wayforpay.com/api",
-        data=json.dumps(data),
-        headers={"Content-Type": "application/json"},
-        timeout=30
-    )
-
-    print("DEBUG WFP request:", data)
-    print("DEBUG WFP response:", r.text)
-
-    return r.json()   # <-- додай для дебагу
-
-# ---------- Telegram ----------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = str(update.effective_user.id)
-    users = load_users()
-    if user_id not in users:
-        users[user_id] = {"level":0,"payments":0,"last_payment":None}
-        save_users(users)
+    uid = str(update.effective_user.id)
+    db_utils.ensure_user(uid)
+    await update.message.reply_text("Вітаю у VIP! Обери дію:", reply_markup=main_menu())
 
-    keyboard = [
-        [InlineKeyboardButton("ℹ️ Мій рівень", callback_data="my_level")],
-        [InlineKeyboardButton("💳 Оплатити підписку", callback_data="pay")],
-        [InlineKeyboardButton("📊 Інфо про рівні", callback_data="info")]
-    ]
-    await update.message.reply_text("Вітаю у клубі! 🎉", reply_markup=InlineKeyboardMarkup(keyboard))
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    uid = str(q.from_user.id)
+    if q.data == "my_level":
+        u = db_utils.get_user(uid) or {}
+        lvl = u.get("level",0)
+        payments = u.get("payments",0)
+        nd = u.get("next_due") or "—"
+        text = f"Рівень: {lvl}\nОплат: {payments}\nНаступне списання: {nd}"
+        await q.edit_message_text(text, reply_markup=main_menu())
+    elif q.data == "info":
+        text = ("1–2 оплати → 1 рівень (20%)\n"
+                "3–4 → 2 рівень (25%)\n"
+                "5–6 → 3 рівень (30%)\n"
+                "7–8 → 4 рівень (35%)\n"
+                "9–10 → 5 рівень (40%)\n"
+                "11+ → 6 рівень (45%)\n\n"
+                "Бонуси: 2 — кава; 3 — 2 кави; 4 — протеїн; 5 — кава+протеїн; 6 — 2 кави+протеїн")
+        await q.edit_message_text(text, reply_markup=main_menu())
+    elif q.data == "pay":
+        resp = create_invoice(uid)
+        if isinstance(resp, dict) and resp.get("invoiceUrl"):
+            url = resp["invoiceUrl"]
+            kb = InlineKeyboardMarkup([[InlineKeyboardButton("Оплатити", url=url)]])
+            await q.edit_message_text(f"Натисніть щоб оплатити: ", reply_markup=kb)
+        else:
+            await q.edit_message_text(f"❌ Помилка WayForPay:\n{json.dumps(resp, indent=2, ensure_ascii=False)}", reply_markup=main_menu())
 
-async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    user_id = str(query.from_user.id)
-    users = load_users()
-
-    if query.data == "my_level":
-        level = users[user_id]["level"]
-        payments = users[user_id]["payments"]
-        text = f"📌 Рівень: {level}\nЗнижка: {get_discount(level)}%\nБонус: {get_bonus(level)}\nОплат: {payments}"
-        await query.edit_message_text(text)
-
-    elif query.data == "info":
-        text = "📊 Система рівнів:\n1-2 оплати → 1 рівень (20%)\n3-4 → 2 рівень (25%)\n5-6 → 3 рівень (30%)\n7-8 → 4 рівень (35%)\n9-10 → 5 рівень (40%)\n11+ → 6 рівень (45%)"
-        await query.edit_message_text(text)
-
-    elif query.data == "pay":
-        try:
-            invoice = create_invoice(user_id)
-
-            if "invoiceUrl" in invoice:
-                pay_url = invoice["invoiceUrl"]
-                await query.edit_message_text(f"💳 Сплатіть підписку: {pay_url}")
-            else:
-                    # показуємо помилку WFP прямо в боті
-                await query.edit_message_text(
-                    f"❌ Помилка WayForPay:\n{json.dumps(invoice, indent=2, ensure_ascii=False)}"
-                )
-
-        except Exception as e:
-            await query.edit_message_text(f"⚠️ Виникла помилка: {e}")
-
-# ---------- Автоперевірка ----------
-def check_subscriptions():
-    users = load_users()
-    for uid, data in users.items():
-        if not data["last_payment"]:
+def daily_job():
+    from datetime import datetime
+    users = dict(db_utils._load())
+    for uid,u in users.items():
+        nd = u.get("next_due")
+        if not nd:
             continue
-        last = datetime.fromisoformat(data["last_payment"])
-        if datetime.now() - last > timedelta(days=3):
-            data["level"] = max(0, data["level"]-1)
-    save_users(users)
+        try:
+            ndt = datetime.fromisoformat(nd)
+        except:
+            continue
+        if datetime.utcnow() >= ndt:
+            rec = u.get("recToken")
+            if not rec:
+                continue
+            order_ref = f"recur_{uid}_{int(time.time())}"
+            payload = {
+                "transactionType": "RECURRING",
+                "merchantAccount": config.MERCHANT_ACCOUNT,
+                "merchantDomainName": config.MERCHANT_DOMAIN_NAME,
+                "orderReference": order_ref,
+                "orderDate": int(time.time()),
+                "amount": str(config.SUBSCRIPTION_PRICE),
+                "currency": "UAH",
+                "recToken": rec,
+                "productName": ["VIP subscription (recurring)"],
+                "productPrice": [config.SUBSCRIPTION_PRICE],
+                "productCount": [1],
+                "apiVersion": 1
+            }
+            payload["merchantSignature"] = generate_signature(payload)
+            try:
+                r = requests.post("https://api.wayforpay.com/api", json=payload, timeout=30)
+                logger.info("WFP recurring response: %s", r.text)
+                resp = r.json()
+                status = resp.get("transactionStatus") or resp.get("orderStatus") or ""
+                if str(status).lower() in ("approved","success","settled"):
+                    db_utils.mark_paid(uid, months=1)
+                else:
+                    logger.info("Recurring not approved for %s: %s", uid, resp)
+            except Exception:
+                logger.exception("Recurring request failed for %s", uid)
 
-def run_scheduler():
+def run_daily_scheduler():
+    import time
     while True:
-        schedule.run_pending()
-        time.sleep(60)
+        try:
+            daily_job()
+        except Exception:
+            logger.exception("daily_job failed")
+        time.sleep(60*60)
 
-schedule.every().day.at("10:00").do(check_subscriptions)
-
-# ---------- MAIN ----------
 def main():
     app = Application.builder().token(config.TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(button))
-
-    t = threading.Thread(target=run_scheduler, daemon=True)
+    app.add_handler(CallbackQueryHandler(button_handler))
+    t = threading.Thread(target=run_daily_scheduler, daemon=True)
     t.start()
     app.run_polling()
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
