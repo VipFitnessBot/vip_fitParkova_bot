@@ -50,31 +50,28 @@ def generate_signature(data):
 
 def create_invoice(user_id, price=100):
     order_ref = f"sub_{user_id}_{int(time.time())}"
-
     data = {
-        "apiVersion": 1,                       # ← Обов'язково!
-        "requestType": "CREATE_INVOICE",       # ← Правильний тип запиту
         "merchantAccount": config.MERCHANT_ACCOUNT,
         "merchantDomainName": config.MERCHANT_DOMAIN_NAME,
         "orderReference": order_ref,
         "orderDate": int(time.time()),
         "amount": price,
         "currency": "UAH",
-        "productName": ["Підписка VIP"],
+        "productName": ["Підписка"],
         "productPrice": [price],
         "productCount": [1],
         "language": "UA",
-        "serviceUrl": config.CALLBACK_URL,     # публічний URL типу https://...up.railway.app/wfp-callback
-        # опційно:
-        # "returnUrl": config.RETURN_URL,      # сторінка, куди повертати користувача після оплати
-        "regularMode": "Y",                    # просимо рекурент
-        "clientAccountId": str(user_id)
+        "serviceUrl": config.CALLBACK_URL,   # твій Railway-домен
+        "transactionType": "AUTO"
     }
-
     data["merchantSignature"] = generate_signature(data)
 
-    r = requests.post("https://api.wayforpay.com/api", json=data, timeout=30)
-
+    r = requests.post(
+        "https://api.wayforpay.com/api",
+        data=json.dumps(data),  # <-- ОБОВ’ЯЗКОВО так, а не json=
+        headers={"Content-Type": "application/json"},
+        timeout=30
+    )
     # --------------- DEBUG -----------------
     print("DEBUG WFP request:", data)
     print("DEBUG WFP response:", r.text)
