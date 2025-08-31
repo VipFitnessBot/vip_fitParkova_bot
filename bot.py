@@ -109,16 +109,20 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(text)
 
     elif query.data == "pay":
-        invoice = create_invoice(user_id)
+        try:
+            invoice = create_invoice(user_id)
 
-        if "invoiceUrl" in invoice:
-            pay_url = invoice["invoiceUrl"]
-            await query.edit_message_text(f"💳 Сплатіть підписку: {pay_url}")
-        else:
-            # показуємо помилку WFP прямо в боті
-            await query.edit_message_text(
-                f"❌ Помилка WayForPay:\n{json.dumps(invoice, indent=2, ensure_ascii=False)}"
-            )
+            if "invoiceUrl" in invoice:
+                pay_url = invoice["invoiceUrl"]
+                await query.edit_message_text(f"💳 Сплатіть підписку: {pay_url}")
+            else:
+                    # показуємо помилку WFP прямо в боті
+                await query.edit_message_text(
+                    f"❌ Помилка WayForPay:\n{json.dumps(invoice, indent=2, ensure_ascii=False)}"
+                )
+
+        except Exception as e:
+            await query.edit_message_text(f"⚠️ Виникла помилка: {e}")
 
 # ---------- Автоперевірка ----------
 def check_subscriptions():
