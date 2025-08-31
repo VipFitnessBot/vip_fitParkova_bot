@@ -66,6 +66,7 @@ def create_invoice(user_id, price=100):
     data["merchantSignature"] = generate_signature(data)
 
     r = requests.post("https://api.wayforpay.com/api/invoice", json=data)
+    print("WayForPay response:", r.text)   # <-- додай для дебагу
     return r.json()
 
 # ---------- Telegram ----------
