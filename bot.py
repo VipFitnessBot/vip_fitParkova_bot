@@ -61,22 +61,21 @@ def create_invoice(user_id, price=100):
         "productPrice": [price],
         "productCount": [1],
         "language": "UA",
-        "serviceUrl": config.CALLBACK_URL,   # твій Railway-домен
-        "transactionType": "AUTO",
+        "serviceUrl": config.CALLBACK_URL,
+        "transactionType": "PURCHASE",   # ← перша оплата вручну
         "apiVersion": 1
     }
     data["merchantSignature"] = generate_signature(data)
 
     r = requests.post(
         "https://api.wayforpay.com/api",
-        data=json.dumps(data),  # <-- ОБОВ’ЯЗКОВО так, а не json=
+        data=json.dumps(data),
         headers={"Content-Type": "application/json"},
         timeout=30
     )
-    # --------------- DEBUG -----------------
+
     print("DEBUG WFP request:", data)
     print("DEBUG WFP response:", r.text)
-    # ------------------------------------------
 
     return r.json()   # <-- додай для дебагу
 
