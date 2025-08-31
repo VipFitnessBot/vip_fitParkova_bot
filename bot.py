@@ -62,7 +62,8 @@ def create_invoice(user_id, price=100):
         "productCount": [1],
         "language": "UA",
         "serviceUrl": config.CALLBACK_URL,   # твій Railway-домен
-        "transactionType": "AUTO"
+        "transactionType": "AUTO",
+        "apiVersion": 1
     }
     data["merchantSignature"] = generate_signature(data)
 
