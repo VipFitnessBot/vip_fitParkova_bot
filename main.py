@@ -1,10 +1,10 @@
 import json
-import time
 import hmac
 import hashlib
 import base64
-import threading
-from datetime import datetime, timedelta
+import time
+from datetime import datetime
+import asyncio
 
 from flask import Flask, request, jsonify
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -12,8 +12,9 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Cont
 import config
 
 USERS_FILE = "users.json"
+flask_app = Flask(__name__)
 
-# ---------- Робота з юзерами ----------
+# ---------- USERS ----------
 def load_users():
     try:
         with open(USERS_FILE, "r") as f:
@@ -30,21 +31,14 @@ def get_discount(level):
 
 def get_bonus(level):
     bonuses = {
-        1: "❌ бонусів",
-        2: "☕️ кава",
-        3: "☕️☕️ дві кави",
-        4: "🥤 протеїновий коктейль",
-        5: "☕️ + 🥤",
-        6: "☕️☕️ + 🥤"
+        1:"❌ бонусів",2:"☕️ кава",3:"☕️☕️ дві кави",
+        4:"🥤 протеїновий коктейль",5:"☕️ + 🥤",6:"☕️☕️ + 🥤"
     }
-    return bonuses.get(level, "☕️☕️ + 🥤")
+    return bonuses.get(level,"☕️☕️ + 🥤")
 
-# ---------- WFP ----------
+# ---------- WAYFORPAY ----------
 def generate_signature(data):
-    keys = [
-        "merchantAccount","merchantDomainName","orderReference","orderDate",
-        "amount","currency"
-    ]
+    keys = ["merchantAccount","merchantDomainName","orderReference","orderDate","amount","currency"]
     s = ";".join([str(data[k]) for k in keys])
     return base64.b64encode(
         hmac.new(config.MERCHANT_SECRET_KEY.encode(), s.encode(), hashlib.md5).digest()
@@ -66,10 +60,17 @@ def create_invoice(user_id, price=100):
         "serviceUrl": f"{config.SERVER_URL}/wfp_callback",
     }
     data["merchantSignature"] = generate_signature(data)
-    pay_url = f"https://secure.wayforpay.com/order/external?merchantAccount={data['merchantAccount']}&merchantSignature={data['merchantSignature']}&orderReference={order_ref}&amount={price}&currency=UAH&productName=Підписка&productPrice={price}&productCount=1"
+    pay_url = (
+        f"https://secure.wayforpay.com/order/external?"
+        f"merchantAccount={data['merchantAccount']}"
+        f"&merchantSignature={data['merchantSignature']}"
+        f"&orderReference={order_ref}"
+        f"&amount={price}&currency=UAH"
+        f"&productName=Підписка&productPrice={price}&productCount=1"
+    )
     return {"invoiceUrl": pay_url, "orderReference": order_ref}
 
-# ---------- Telegram ----------
+# ---------- TELEGRAM ----------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     users = load_users()
@@ -97,18 +98,15 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(text)
 
     elif query.data == "info":
-        text = "📊 Система рівнів:\n1-2 оплати → 1 рівень (20%)\n3-4 → 2 рівень (25%)\n5-6 → 3 рівень (30%)\n7-8 → 4 рівень (35%)\n9-10 → 5 рівень (40%)\n11+ → 6 рівень (45%)"
+        text = "📊 Система рівнів:\n1-2 →20%\n3-4 →25%\n5-6 →30%\n7-8 →35%\n9-10 →40%\n11+ →45%"
         await query.edit_message_text(text)
 
     elif query.data == "pay":
         invoice = create_invoice(user_id)
-        pay_url = invoice.get("invoiceUrl","https://google.com")
-        await query.edit_message_text(f"💳 Сплатіть підписку: {pay_url}")
+        await query.edit_message_text(f"💳 Сплатіть підписку: {invoice['invoiceUrl']}")
 
-# ---------- Flask сервер ----------
-app = Flask(__name__)
-
-@app.route("/wfp_callback", methods=["POST"])
+# ---------- FLASK CALLBACK ----------
+@flask_app.route("/wfp_callback", methods=["POST"])
 def wfp_callback():
     data = request.json
     if not data:
@@ -125,15 +123,21 @@ def wfp_callback():
             save_users(users)
     return jsonify({"status":"ok"})
 
-# ---------- MAIN ----------
-def run_bot():
-    app_telegram = Application.builder().token(config.TELEGRAM_TOKEN).build()
-    app_telegram.add_handler(CommandHandler("start", start))
-    app_telegram.add_handler(CallbackQueryHandler(button))
-    app_telegram.run_polling()
+# ---------- RUN BOTH ----------
+async def main():
+    # Telegram app
+    app_tg = Application.builder().token(config.TELEGRAM_TOKEN).build()
+    app_tg.add_handler(CommandHandler("start", start))
+    app_tg.add_handler(CallbackQueryHandler(button))
 
-if __name__ == '__main__':
-    t = threading.Thread(target=run_bot, daemon=True)
-    t.start()
-    app.run(host="0.0.0.0", port=8080)
+    # запускаємо Flask у окремому потоці
+    loop = asyncio.get_event_loop()
+    runner = loop.run_in_executor(None, lambda: flask_app.run(host="0.0.0.0", port=8080))
+
+    # запускаємо телеграм
+    await app_tg.run_polling()
+
+if __name__ == "__main__":
+    asyncio.run(main())
+
 
